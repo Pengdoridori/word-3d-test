@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dual Word Particle Space</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #05070d;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #fff;
+    }
+
+    #app {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+
+    #ui {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      width: min(420px, calc(100% - 32px));
+      padding: 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      background: rgba(10, 14, 24, 0.75);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+    }
+
+    #ui h1 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    label {
+      font-size: 12px;
+      color: rgba(255,255,255,0.8);
+    }
+
+    input {
+      background: rgba(255,255,255,0.06);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px;
+      padding: 12px;
+      outline: none;
+      font-size: 15px;
+    }
+
+    input:focus {
+      border-color: rgba(115, 177, 255, 0.7);
+      box-shadow: 0 0 0 3px rgba(115, 177, 255, 0.15);
+    }
+
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 14px;
+      background: linear-gradient(180deg, #7aa9ff, #4e7dff);
+      color: white;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.12);
+      font-weight: 600;
+    }
+
+    button:hover { filter: brightness(1.05); }
+
+    #hint {
+      margin-top: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: rgba(255,255,255,0.74);
+    }
+
+    #badge {
+      position: absolute;
+      right: 16px;
+      bottom: 16px;
+      z-index: 10;
+      padding: 10px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: rgba(255,255,255,0.85);
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.12);
+      backdrop-filter: blur(8px);
+    }
+
+    canvas { display: block; }
+
+    @media (max-width: 720px) {
+      .row { grid-template-columns: 1fr; }
+      #ui { width: calc(100% - 24px); left: 12px; top: 12px; }
+      #badge { right: 12px; bottom: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="ui">
+      <h1>두 단어를 3D 파티클로 교차 배치</h1>
+      <div class="row">
+        <div class="field">
+          <label for="topWord">위에서 보이는 단어</label>
+          <input id="topWord" value="APPLE" maxlength="14" />
+        </div>
+        <div class="field">
+          <label for="sideWord">옆에서 보이는 단어</label>
+          <input id="sideWord" value="LOVE" maxlength="14" />
+        </div>
+      </div>
+      <div class="buttons">
+        <button id="generateBtn">생성</button>
+        <button class="secondary" id="topViewBtn">위에서 보기</button>
+        <button class="secondary" id="sideViewBtn">옆에서 보기</button>
+        <button class="secondary" id="freeViewBtn">자유 시점</button>
+      </div>
+      <div id="hint">
+        마우스 드래그로 회전, 휠로 확대/축소 가능. <br>
+        구현 방식상 글자가 길수록 파티클 수가 많아져서 약간 무거워질 수 있어.
+      </div>
+    </div>
+    <div id="badge">Top projection + Side projection</div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.162.0/examples/js/controls/OrbitControls.js"></script>
+  <script>
+
+    const app = document.getElementById('app');
+    const topWordInput = document.getElementById('topWord');
+    const sideWordInput = document.getElementById('sideWord');
+    const generateBtn = document.getElementById('generateBtn');
+    const topViewBtn = document.getElementById('topViewBtn');
+    const sideViewBtn = document.getElementById('sideViewBtn');
+    const freeViewBtn = document.getElementById('freeViewBtn');
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x05070d);
+    scene.fog = new THREE.Fog(0x05070d, 120, 340);
+
+    const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(85, 55, 85);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    app.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.target.set(0, 0, 0);
+    controls.minDistance = 25;
+    controls.maxDistance = 220;
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.8);
+    scene.add(ambient);
+
+    const dir = new THREE.DirectionalLight(0xffffff, 1.3);
+    dir.position.set(40, 70, 30);
+    scene.add(dir);
+
+    const grid = new THREE.GridHelper(240, 24, 0x2e3f65, 0x1a2236);
+    grid.position.y = -32;
+    scene.add(grid);
+
+    const axes = new THREE.AxesHelper(40);
+    axes.position.set(-65, -31.9, -65);
+    scene.add(axes);
+
+    let particlePoints = null;
+    let basePositions = null;
+    let particleCount = 0;
+
+    function createTextMask(text, width = 72, height = 24) {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+      ctx.fillStyle = 'black';
+      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const sizeByLength = Math.max(12, Math.min(22, Math.floor(width / Math.max(text.length * 0.7, 3))));
+      ctx.font = `900 ${sizeByLength}px Arial, Helvetica, sans-serif`;
+      ctx.fillText(text, width / 2, height / 2 + 1);
+
+      const img = ctx.getImageData(0, 0, width, height).data;
+      const mask = [];
+
+      for (let y = 0; y < height; y++) {
+        const row = [];
+        for (let x = 0; x < width; x++) {
+          const idx = (y * width + x) * 4;
+          row.push(img[idx] > 80);
+        }
+        mask.push(row);
+      }
+      return { mask, width, height };
+    }
+
+    function buildParticlePositions(wordTop, wordSide) {
+      const W = 72;
+      const H = 24;
+      const top = createTextMask(wordTop, W, H).mask;
+      const side = createTextMask(wordSide, W, H).mask;
+
+      const positions = [];
+      const step = 1.15;
+      const xOffset = -W * step * 0.5;
+      const yOffset = -H * step * 0.5;
+      const zOffset = -H * step * 0.5;
+
+      // z is shared between top/side silhouettes.
+      for (let z = 0; z < H; z++) {
+        const topXs = [];
+        const sideYs = [];
+
+        // Top projection uses x-z plane.
+        for (let x = 0; x < W; x++) {
+          if (top[z][x]) topXs.push(x);
+        }
+
+        // Side projection uses y-z plane.
+        for (let y = 0; y < H; y++) {
+          if (side[z][Math.floor((y / H) * W)]) {
+            sideYs.push(y);
+          }
+        }
+
+        if (topXs.length === 0 || sideYs.length === 0) continue;
+
+        for (const x of topXs) {
+          for (const y of sideYs) {
+            positions.push(
+              x * step + xOffset,
+              (H - 1 - y) * step + yOffset,
+              (H - 1 - z) * step + zOffset
+            );
+          }
+        }
+      }
+
+      return new Float32Array(positions);
+    }
+
+    function disposeCurrentPoints() {
+      if (!particlePoints) return;
+      particlePoints.geometry.dispose();
+      particlePoints.material.dispose();
+      scene.remove(particlePoints);
+      particlePoints = null;
+      basePositions = null;
+      particleCount = 0;
+    }
+
+    function generateParticleWord() {
+      const wordTop = (topWordInput.value || 'APPLE').trim().toUpperCase();
+      const wordSide = (sideWordInput.value || 'LOVE').trim().toUpperCase();
+
+      disposeCurrentPoints();
+
+      const positions = buildParticlePositions(wordTop, wordSide);
+      basePositions = positions.slice();
+      particleCount = positions.length / 3;
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+      const colors = new Float32Array(particleCount * 3);
+      for (let i = 0; i < particleCount; i++) {
+        const t = i / Math.max(particleCount - 1, 1);
+        colors[i * 3 + 0] = 0.35 + 0.65 * Math.sin(t * Math.PI) * 0.8;
+        colors[i * 3 + 1] = 0.65 + 0.25 * Math.cos(t * Math.PI * 0.6);
+        colors[i * 3 + 2] = 1.0;
+      }
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const material = new THREE.PointsMaterial({
+        size: 0.95,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.95,
+        sizeAttenuation: true,
+      });
+
+      particlePoints = new THREE.Points(geometry, material);
+      scene.add(particlePoints);
+    }
+
+    function animateCameraTo(position, target = new THREE.Vector3(0, 0, 0)) {
+      const startPos = camera.position.clone();
+      const startTarget = controls.target.clone();
+      const endPos = position.clone();
+      const endTarget = target.clone();
+      const duration = 700;
+      const start = performance.now();
+
+      function tick(now) {
+        const t = Math.min((now - start) / duration, 1);
+        const eased = 1 - Math.pow(1 - t, 3);
+        camera.position.lerpVectors(startPos, endPos, eased);
+        controls.target.lerpVectors(startTarget, endTarget, eased);
+        controls.update();
+        if (t < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    }
+
+    topViewBtn.addEventListener('click', () => {
+      animateCameraTo(new THREE.Vector3(0, 120, 0.01));
+    });
+
+    sideViewBtn.addEventListener('click', () => {
+      animateCameraTo(new THREE.Vector3(120, 0, 0.01));
+    });
+
+    freeViewBtn.addEventListener('click', () => {
+      animateCameraTo(new THREE.Vector3(85, 55, 85));
+    });
+
+    generateBtn.addEventListener('click', generateParticleWord);
+
+    topWordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') generateParticleWord();
+    });
+    sideWordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') generateParticleWord();
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    });
+
+    let clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const elapsed = clock.getElapsedTime();
+
+      if (particlePoints && basePositions) {
+        const pos = particlePoints.geometry.attributes.position.array;
+        for (let i = 0; i < particleCount; i++) {
+          const i3 = i * 3;
+          const x = basePositions[i3 + 0];
+          const y = basePositions[i3 + 1];
+          const z = basePositions[i3 + 2];
+          pos[i3 + 0] = x + Math.sin(elapsed * 0.9 + z * 0.12 + y * 0.04) * 0.08;
+          pos[i3 + 1] = y + Math.sin(elapsed * 1.4 + x * 0.11) * 0.08;
+          pos[i3 + 2] = z + Math.cos(elapsed * 1.1 + x * 0.07 + y * 0.05) * 0.08;
+        }
+        particlePoints.geometry.attributes.position.needsUpdate = true;
+        particlePoints.rotation.y = Math.sin(elapsed * 0.15) * 0.04;
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    generateParticleWord();
+    animate();
+  </script>
+</body>
+</html>
