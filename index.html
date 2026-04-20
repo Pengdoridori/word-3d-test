@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>두 단어 3D 파티클</title>
+<style>
+  html, body { margin:0; width:100%; height:100%; overflow:hidden; background:#030712; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#fff; }
+  #app { position:relative; width:100%; height:100%; }
+  canvas { display:block; width:100%; height:100%; }
+  #ui {
+    position:absolute; left:16px; top:16px; z-index:10; width:min(440px, calc(100% - 32px));
+    background:rgba(10,14,24,.82); border:1px solid rgba(255,255,255,.12); border-radius:18px;
+    padding:14px; box-shadow:0 10px 30px rgba(0,0,0,.35); backdrop-filter: blur(8px);
+  }
+  h1 { margin:0 0 10px; font-size:18px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .field { display:flex; flex-direction:column; gap:6px; }
+  label { font-size:12px; color:rgba(255,255,255,.75); }
+  input {
+    background:rgba(255,255,255,.06); color:#fff; border:1px solid rgba(255,255,255,.12);
+    border-radius:10px; padding:12px; font-size:15px; outline:none;
+  }
+  .buttons { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  button {
+    border:none; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; color:#fff;
+    background:linear-gradient(180deg,#6ea7ff,#4d7cff);
+  }
+  button.secondary { background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); }
+  #status { margin-top:10px; font-size:12px; color:rgba(255,255,255,.72); line-height:1.5; white-space:pre-line; }
+  #badge {
+    position:absolute; right:16px; bottom:16px; z-index:10; font-size:12px; padding:10px 12px;
+    background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); border-radius:999px;
+    color:rgba(255,255,255,.82);
+  }
+  @media (max-width:720px){ .row{ grid-template-columns:1fr; } #ui{ left:12px; top:12px; width:calc(100% - 24px); } }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="canvas"></canvas>
+  <div id="ui">
+    <h1>두 단어를 3D 파티클로 교차 배치</h1>
+    <div class="row">
+      <div class="field">
+        <label for="topWord">위에서 보이는 단어</label>
+        <input id="topWord" value="APPLE" maxlength="12" />
+      </div>
+      <div class="field">
+        <label for="sideWord">옆에서 보이는 단어</label>
+        <input id="sideWord" value="LOVE" maxlength="12" />
+      </div>
+    </div>
+    <div class="buttons">
+      <button id="generateBtn">생성</button>
+      <button class="secondary" id="topViewBtn">위에서 보기</button>
+      <button class="secondary" id="sideViewBtn">옆에서 보기</button>
+      <button class="secondary" id="freeViewBtn">자유 시점</button>
+    </div>
+    <div id="status">준비됨</div>
+  </div>
+  <div id="badge">드래그 회전 · 휠 줌</div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const topWordInput = document.getElementById('topWord');
+  const sideWordInput = document.getElementById('sideWord');
+  const statusEl = document.getElementById('status');
+  const particles = [];
+
+  const state = {
+    yaw: -0.65,
+    pitch: 0.45,
+    distance: 190,
+    targetYaw: -0.65,
+    targetPitch: 0.45,
+    targetDistance: 190,
+    dragging: false,
+    lastX: 0,
+    lastY: 0,
+    viewMode: 'free'
+  };
+
+  function setStatus(msg) { statusEl.textContent = msg; }
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function createMask(text, width = 92, height = 28) {
+    const c = document.createElement('canvas');
+    c.width = width;
+    c.height = height;
+    const cctx = c.getContext('2d', { willReadFrequently: true });
+    cctx.fillStyle = '#000';
+    cctx.fillRect(0, 0, width, height);
+    cctx.fillStyle = '#fff';
+    cctx.textAlign = 'center';
+    cctx.textBaseline = 'middle';
+    const fontSize = Math.max(12, Math.min(24, Math.floor(width / Math.max(text.length * 0.72, 3))));
+    cctx.font = `900 ${fontSize}px Arial, Helvetica, sans-serif`;
+    cctx.fillText(text, width / 2, height / 2 + 1);
+    const data = cctx.getImageData(0, 0, width, height).data;
+    const mask = Array.from({length: height}, () => Array(width).fill(false));
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        mask[y][x] = data[(y * width + x) * 4] > 100;
+      }
+    }
+    return { mask, width, height };
+  }
+
+  function buildParticles(wordTop, wordSide) {
+    particles.length = 0;
+    const top = createMask(wordTop);
+    const side = createMask(wordSide);
+    const W = top.width;
+    const H = top.height;
+    const step = 2.2;
+    const x0 = -W * step * 0.5;
+    const y0 = -H * step * 0.5;
+    const z0 = -H * step * 0.5;
+
+    for (let z = 0; z < H; z++) {
+      const xs = [];
+      const ys = [];
+      for (let x = 0; x < W; x++) if (top.mask[z][x]) xs.push(x);
+      for (let y = 0; y < H; y++) {
+        const sx = Math.floor((y / (H - 1 || 1)) * (side.width - 1));
+        if (side.mask[z][sx]) ys.push(y);
+      }
+      if (!xs.length || !ys.length) continue;
+      for (const x of xs) {
+        for (const y of ys) {
+          particles.push({
+            x: x0 + x * step,
+            y: y0 + (H - 1 - y) * step,
+            z: z0 + (H - 1 - z) * step,
+            seed: Math.random() * 1000
+          });
+        }
+      }
+    }
+    setStatus(`생성 완료\n파티클 수: ${particles.length.toLocaleString()}개\n드래그 회전, 휠 확대/축소 가능`);
+  }
+
+  function rotatePoint(p, yaw, pitch) {
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const x1 = p.x * cy - p.z * sy;
+    const z1 = p.x * sy + p.z * cy;
+    const y2 = p.y * cp - z1 * sp;
+    const z2 = p.y * sp + z1 * cp;
+    return { x: x1, y: y2, z: z2 };
+  }
+
+  function project(p) {
+    const camZ = state.distance;
+    const depth = p.z + camZ;
+    const f = 520 / Math.max(depth, 10);
+    return {
+      x: window.innerWidth * 0.5 + p.x * f,
+      y: window.innerHeight * 0.5 - p.y * f,
+      scale: Math.max(0.4, Math.min(2.4, f * 0.42)),
+      depth
+    };
+  }
+
+  function drawGrid() {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(80,110,180,0.12)';
+    ctx.lineWidth = 1;
+    const range = 140;
+    const step = 20;
+    for (let i = -range; i <= range; i += step) {
+      drawLine3D({x:-range,y:-40,z:i},{x:range,y:-40,z:i});
+      drawLine3D({x:i,y:-40,z:-range},{x:i,y:-40,z:range});
+    }
+    ctx.restore();
+  }
+
+  function drawLine3D(a, b) {
+    const ra = rotatePoint(a, state.yaw, state.pitch);
+    const rb = rotatePoint(b, state.yaw, state.pitch);
+    const pa = project(ra);
+    const pb = project(rb);
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  }
+
+  function render(t) {
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    const bg = ctx.createLinearGradient(0,0,0,window.innerHeight);
+    bg.addColorStop(0,'#02050b');
+    bg.addColorStop(1,'#030814');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+
+    state.yaw += (state.targetYaw - state.yaw) * 0.12;
+    state.pitch += (state.targetPitch - state.pitch) * 0.12;
+    state.distance += (state.targetDistance - state.distance) * 0.12;
+
+    drawGrid();
+
+    const drawList = [];
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      const wobble = Math.sin(t * 0.001 + p.seed + p.x * 0.03 + p.z * 0.02) * 0.8;
+      const rotated = rotatePoint({ x:p.x, y:p.y + wobble, z:p.z }, state.yaw, state.pitch);
+      const proj = project(rotated);
+      drawList.push({ proj, depth: proj.depth, idx: i });
+    }
+    drawList.sort((a,b) => b.depth - a.depth);
+
+    for (const item of drawList) {
+      const p = item.proj;
+      const r = 1.4 * p.scale;
+      const glow = 6 * p.scale;
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glow);
+      g.addColorStop(0, 'rgba(140,190,255,0.95)');
+      g.addColorStop(0.35, 'rgba(110,160,255,0.55)');
+      g.addColorStop(1, 'rgba(110,160,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, glow, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(220,235,255,0.92)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  function setView(mode) {
+    state.viewMode = mode;
+    if (mode === 'top') {
+      state.targetYaw = 0;
+      state.targetPitch = Math.PI / 2 - 0.001;
+      state.targetDistance = 165;
+    } else if (mode === 'side') {
+      state.targetYaw = -Math.PI / 2;
+      state.targetPitch = 0;
+      state.targetDistance = 185;
+    } else {
+      state.targetYaw = -0.65;
+      state.targetPitch = 0.45;
+      state.targetDistance = 190;
+    }
+  }
+
+  function generate() {
+    const top = (topWordInput.value || 'APPLE').trim().toUpperCase();
+    const side = (sideWordInput.value || 'LOVE').trim().toUpperCase();
+    if (!top || !side) {
+      setStatus('단어 2개를 모두 입력해줘.');
+      return;
+    }
+    buildParticles(top, side);
+  }
+
+  document.getElementById('generateBtn').addEventListener('click', generate);
+  document.getElementById('topViewBtn').addEventListener('click', () => setView('top'));
+  document.getElementById('sideViewBtn').addEventListener('click', () => setView('side'));
+  document.getElementById('freeViewBtn').addEventListener('click', () => setView('free'));
+  topWordInput.addEventListener('keydown', e => { if (e.key === 'Enter') generate(); });
+  sideWordInput.addEventListener('keydown', e => { if (e.key === 'Enter') generate(); });
+
+  canvas.addEventListener('mousedown', e => {
+    state.dragging = true;
+    state.lastX = e.clientX;
+    state.lastY = e.clientY;
+  });
+  window.addEventListener('mouseup', () => state.dragging = false);
+  window.addEventListener('mousemove', e => {
+    if (!state.dragging) return;
+    const dx = e.clientX - state.lastX;
+    const dy = e.clientY - state.lastY;
+    state.lastX = e.clientX;
+    state.lastY = e.clientY;
+    state.targetYaw += dx * 0.008;
+    state.targetPitch += dy * 0.008;
+    state.targetPitch = Math.max(-1.45, Math.min(1.45, state.targetPitch));
+  });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    state.targetDistance += e.deltaY * 0.09;
+    state.targetDistance = Math.max(80, Math.min(360, state.targetDistance));
+  }, { passive:false });
+
+  window.addEventListener('resize', resize);
+  resize();
+  generate();
+  requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>
